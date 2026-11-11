@@ -10,6 +10,10 @@ import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 
 const WAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024;
+// SQLite's default page cache is 2 MiB and mmap is off; a multi-GB database re-reads its hot pages on every refresh.
+// Each of the writer and the 4 reader workers holds its own cache, filled on demand.
+const CACHE_SIZE_KIB = 128 * 1024;
+const MMAP_SIZE_BYTES = 256 * 1024 * 1024;
 
 const layerSetup = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -33,6 +37,8 @@ const layerSetup = Layer.effectDiscard(
     yield* sql`PRAGMA temp_store = MEMORY;`;
     // PASSIVE checkpoints retain peak WAL size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+    yield* sql.unsafe(`PRAGMA cache_size = -${CACHE_SIZE_KIB};`);
+    yield* sql.unsafe(`PRAGMA mmap_size = ${MMAP_SIZE_BYTES};`);
     yield* runMigrations();
     // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
     // Connections cache stats; reload after deleting them.
@@ -54,6 +60,8 @@ export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (d
     NodeSqliteClient.layer({
       filename: dbPath,
       readerWorker: true,
+      readerCacheSizeKiB: CACHE_SIZE_KIB,
+      readerMmapSizeBytes: MMAP_SIZE_BYTES,
       // Run checkpoint fsyncs off the event loop so slow disk flushes cannot stall clients.
       checkpointWorker: true,
       spanAttributes: {

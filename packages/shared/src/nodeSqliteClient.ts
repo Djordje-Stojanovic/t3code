@@ -35,6 +35,9 @@ export interface SqliteClientConfig {
   readonly spanAttributes?: Record<string, unknown> | undefined;
   /** Ignored for in-memory databases, which cannot share a second connection. */
   readonly readerWorker?: boolean | undefined;
+  /** Page cache and memory map of each reader worker; the writer is set by the caller with PRAGMA. */
+  readonly readerCacheSizeKiB?: number | undefined;
+  readonly readerMmapSizeBytes?: number | undefined;
   /** Ignored for in-memory databases. */
   readonly checkpointWorker?: boolean | undefined;
 }
@@ -205,6 +208,8 @@ try {
     allowExtension: workerData.allowExtension,
   });
   next.exec("PRAGMA busy_timeout = 5000;");
+  if (workerData.cacheSizeKiB !== undefined) next.exec("PRAGMA cache_size = -" + workerData.cacheSizeKiB + ";");
+  if (workerData.mmapSizeBytes !== undefined) next.exec("PRAGMA mmap_size = " + workerData.mmapSizeBytes + ";");
   // Without WAL a reader's shared lock blocks the writer's commits, so refuse.
   const mode = String(next.prepare("PRAGMA journal_mode").get().journal_mode).toLowerCase();
   if (mode !== "wal") throw new Error("database uses journal_mode " + mode + ", not wal");
@@ -317,6 +322,8 @@ const makeReader = Effect.fnUntraced(function* (
         filename: options.filename,
         allowExtension: false,
         prepareCacheSize: 200,
+        cacheSizeKiB: options.readerCacheSizeKiB,
+        mmapSizeBytes: options.readerMmapSizeBytes,
       },
     });
     let announce: (startup: ReaderStartup) => void = () => {};
