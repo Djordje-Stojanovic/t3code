@@ -8,6 +8,7 @@ import type * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -183,3 +184,33 @@ it.effect("drops planner statistics a database already has", () => {
     Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });
+
+it.effect(
+  "gives the writer and every reader worker a 128 MiB page cache and a 256 MiB memory map",
+  () => {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-cache-"));
+    const persistence = SqlitePersistence.layerFromPath(
+      NodePath.join(tempDir, "state.sqlite"),
+    ).pipe(Layer.provide(NodeServices.layer));
+
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const pragmas = Effect.gen(function* () {
+        return {
+          cache: yield* sql`PRAGMA cache_size`,
+          mmap: yield* sql`PRAGMA mmap_size`,
+        };
+      });
+      const expected = {
+        cache: [{ cache_size: -131072 }],
+        mmap: [{ mmap_size: 268435456 }],
+      };
+      assert.deepEqual(yield* pragmas, expected);
+      // Reads in a read-only transaction run on a reader worker, which has its own connection.
+      assert.deepEqual(yield* sql.withTransaction(pragmas).pipe(readOnly), expected);
+    }).pipe(
+      Effect.provide(persistence),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  },
+);
